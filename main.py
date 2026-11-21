@@ -1,5 +1,4 @@
-def main():
-    print("Hello from opportunity-radar!")
+from opportunity_radar.web import main
 
 
 if __name__ == "__main__":
