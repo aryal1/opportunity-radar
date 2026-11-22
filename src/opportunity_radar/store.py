@@ -1,71 +1,164 @@
 import json
 import os
-import sqlite3
+from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
-
-DB_PATH = Path(os.getenv("RADAR_DB", "data/opportunity-radar.sqlite3"))
-
-
-def connect(path: Path = DB_PATH) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("""CREATE TABLE IF NOT EXISTS datasets (
-        id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-        organization TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
-        modified TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
-        keywords TEXT NOT NULL DEFAULT '[]', saved INTEGER NOT NULL DEFAULT 0,
-        fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )""")
-    connection.execute("""CREATE TABLE IF NOT EXISTS analyses (
-        dataset_id TEXT PRIMARY KEY REFERENCES datasets(id) ON DELETE CASCADE,
-        content TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )""")
-    connection.commit()
-    return connection
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    create_engine,
+    func,
+    inspect,
+    or_,
+    select,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
-def save_datasets(datasets: list[dict], path: Path = DB_PATH) -> int:
-    with connect(path) as db:
+class Base(DeclarativeBase):
+    pass
+
+
+class Dataset(Base):
+    __tablename__ = "datasets"
+
+    id: Mapped[str] = mapped_column(String(180), primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
+    organization: Mapped[str] = mapped_column(String(500), default="")
+    category: Mapped[str] = mapped_column(String(500), default="")
+    modified: Mapped[str] = mapped_column(String(80), default="")
+    url: Mapped[str] = mapped_column(Text, default="")
+    keywords: Mapped[str] = mapped_column(Text, default="[]")
+    saved: Mapped[bool] = mapped_column(Boolean, default=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Analysis(Base):
+    __tablename__ = "analyses"
+
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), primary_key=True)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
+@lru_cache(maxsize=8)
+def _engine(path: Path | None = None):
+    if path is not None:
+        url = f"sqlite:///{path.resolve()}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        url = os.getenv("DATABASE_URL", "sqlite:///data/opportunity-radar.sqlite3")
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+psycopg://", 1)
+        elif url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    options = {"check_same_thread": False} if url.startswith("sqlite:") else {}
+    engine = create_engine(url, connect_args=options, pool_pre_ping=True)
+    Base.metadata.create_all(engine)
+    columns = {column["name"] for column in inspect(engine).get_columns("datasets")}
+    if "embedding" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE datasets ADD COLUMN embedding TEXT"))
+    return engine
+
+
+def _json_row(dataset: Dataset, analysis: Analysis | None = None) -> dict:
+    return {
+        "id": dataset.id, "title": dataset.title, "description": dataset.description,
+        "organization": dataset.organization, "category": dataset.category,
+        "modified": dataset.modified, "url": dataset.url, "keywords": dataset.keywords,
+        "saved": dataset.saved, "fetched_at": dataset.fetched_at.isoformat() if dataset.fetched_at else None,
+        "analysis": analysis.content if analysis else None,
+        "analyzed_at": analysis.created_at.isoformat() if analysis else None,
+    }
+
+
+def save_datasets(datasets: list[dict], path: Path | None = None) -> int:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory.begin() as session:
         for item in datasets:
-            db.execute("""INSERT INTO datasets
-                (id,title,description,organization,category,modified,url,keywords)
-                VALUES (:id,:title,:description,:organization,:category,:modified,:url,:keywords)
-                ON CONFLICT(id) DO UPDATE SET title=excluded.title, description=excluded.description,
-                organization=excluded.organization, category=excluded.category, modified=excluded.modified,
-                url=excluded.url, keywords=excluded.keywords, fetched_at=CURRENT_TIMESTAMP""",
-                {**item, "keywords": json.dumps(item["keywords"], ensure_ascii=False)})
+            row = session.get(Dataset, str(item["id"]))
+            if row is None:
+                row = Dataset(id=str(item["id"]), title=item["title"])
+                session.add(row)
+            for field in ("title", "description", "organization", "category", "modified", "url"):
+                setattr(row, field, str(item.get(field) or ""))
+            row.keywords = json.dumps(item.get("keywords", []), ensure_ascii=False)
+            row.fetched_at = datetime.now(UTC)
     return len(datasets)
 
 
-def list_datasets(query: str = "", saved_only: bool = False, path: Path = DB_PATH) -> list[dict]:
-    sql = "SELECT d.*, a.content AS analysis, a.created_at AS analyzed_at FROM datasets d LEFT JOIN analyses a ON a.dataset_id=d.id"
-    terms, values = [], []
+def list_datasets(query: str = "", saved_only: bool = False, path: Path | None = None) -> list[dict]:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    statement = select(Dataset, Analysis).outerjoin(Analysis, Analysis.dataset_id == Dataset.id)
     if query.strip():
-        terms.append("(d.title LIKE ? OR d.description LIKE ? OR d.organization LIKE ? OR d.category LIKE ?)")
-        values.extend([f"%{query.strip()}%"] * 4)
+        needle = f"%{query.strip()}%"
+        statement = statement.where(or_(Dataset.title.ilike(needle), Dataset.description.ilike(needle), Dataset.organization.ilike(needle), Dataset.category.ilike(needle)))
     if saved_only:
-        terms.append("d.saved=1")
-    if terms:
-        sql += " WHERE " + " AND ".join(terms)
-    sql += " ORDER BY d.modified DESC, d.title COLLATE NOCASE LIMIT 300"
-    with connect(path) as db:
-        return [dict(row) for row in db.execute(sql, values)]
+        statement = statement.where(Dataset.saved.is_(True))
+    statement = statement.order_by(Dataset.modified.desc(), Dataset.title.asc()).limit(300)
+    with factory() as session:
+        result = [_json_row(dataset, analysis) for dataset, analysis in session.execute(statement)]
+    return result
 
 
-def set_saved(dataset_id: str, saved: bool, path: Path = DB_PATH) -> bool:
-    with connect(path) as db:
-        cursor = db.execute("UPDATE datasets SET saved=? WHERE id=?", (int(saved), dataset_id))
-        return cursor.rowcount > 0
+def set_saved(dataset_id: str, saved: bool, path: Path | None = None) -> bool:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory.begin() as session:
+        row = session.get(Dataset, dataset_id)
+        if row is None:
+            return False
+        row.saved = saved
+    return True
 
 
-def save_analysis(dataset_id: str, content: str, path: Path = DB_PATH) -> None:
-    with connect(path) as db:
-        db.execute("INSERT INTO analyses(dataset_id,content) VALUES (?,?) ON CONFLICT(dataset_id) DO UPDATE SET content=excluded.content, created_at=CURRENT_TIMESTAMP", (dataset_id, content))
+def save_analysis(dataset_id: str, content: str, path: Path | None = None) -> None:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory.begin() as session:
+        row = session.get(Analysis, dataset_id)
+        if row is None:
+            row = Analysis(dataset_id=dataset_id, content=content)
+            session.add(row)
+        else:
+            row.content = content
+            row.created_at = datetime.now(UTC)
 
 
-def stats(path: Path = DB_PATH) -> dict:
-    with connect(path) as db:
-        row = db.execute("SELECT COUNT(*) total, SUM(saved) saved, MAX(fetched_at) updated FROM datasets").fetchone()
-        return {"total": row["total"], "saved": row["saved"] or 0, "updated": row["updated"]}
+def save_embeddings(embeddings: dict[str, list[float]], path: Path | None = None) -> None:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory.begin() as session:
+        for dataset_id, vector in embeddings.items():
+            row = session.get(Dataset, dataset_id)
+            if row is not None:
+                row.embedding = json.dumps(vector)
+
+
+def embedded_datasets(path: Path | None = None) -> list[dict]:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory() as session:
+        result = [{"id": row.id, "title": row.title, "description": row.description, "url": row.url, "embedding": row.embedding}
+                  for row in session.scalars(select(Dataset).where(Dataset.embedding.is_not(None)))]
+    return result
+
+
+def stats(path: Path | None = None) -> dict:
+    engine = _engine(path)
+    factory = sessionmaker(engine)
+    with factory() as session:
+        total = session.scalar(select(func.count()).select_from(Dataset)) or 0
+        saved = session.scalar(select(func.count()).select_from(Dataset).where(Dataset.saved.is_(True))) or 0
+        updated = session.scalar(select(func.max(Dataset.fetched_at)))
+    return {"total": total, "saved": saved, "updated": updated.isoformat(sep=" ") if updated else None}

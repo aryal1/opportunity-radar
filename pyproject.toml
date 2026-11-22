@@ -5,10 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "beautifulsoup4>=4.15.0",
-    "openai>=3.57.0",
-    "python-dotenv>=1.2.4",
-    "requests>=2.34.2",
+    "fastapi>=0.115",
+    "openai>=1.68",
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "sqlalchemy>=2.0",
+    "uvicorn[standard]>=0.34",
 ]
 
 [build-system]
@@ -17,8 +20,9 @@ build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.2.0",
-    "ruff>=0.17.4",
+    "httpx>=0.28",
+    "pytest>=8.0",
+    "ruff>=0.9",
 ]
 
 [tool.setuptools.packages.find]

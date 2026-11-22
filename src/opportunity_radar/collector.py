@@ -1,5 +1,6 @@
 import requests
 
+
 def fetch_page(url: str) -> str:
     """
     Fetch the HTML content of a webpage.

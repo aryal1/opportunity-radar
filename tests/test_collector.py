@@ -1,4 +1,5 @@
 from unittest.mock import Mock, patch
+
 import pytest
 import requests
 
@@ -26,10 +27,9 @@ def test_fetch_page_raises_on_http_error():
     mock_response = Mock()
     mock_response.text = "<html>Hello World</html>"
 
-    with pytest.raises(requests.exceptions.HTTPError):
-        with patch(
-            "opportunity_radar.collector.requests.get",
-            return_value=mock_response,
-        ) as mock_get:
-            mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
-            fetch_page("https://example.com")
+    with pytest.raises(requests.exceptions.HTTPError), patch(
+        "opportunity_radar.collector.requests.get",
+        return_value=mock_response,
+    ):
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
+        fetch_page("https://example.com")

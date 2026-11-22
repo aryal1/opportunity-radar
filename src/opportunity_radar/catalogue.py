@@ -2,7 +2,6 @@ from datetime import datetime
 
 import requests
 
-
 API_URL = "https://api.dane.gov.pl/1.4/datasets"
 
 
@@ -29,7 +28,7 @@ def normalize_dataset(record: object) -> dict | None:
     modified = attributes.get("modified") or attributes.get("created") or ""
     if modified:
         try:
-            datetime.fromisoformat(str(modified).replace("Z", "+00:00"))
+            datetime.fromisoformat(str(modified))
         except ValueError:
             modified = ""
     link = attributes.get("url") or f"https://dane.gov.pl/pl/dataset/{identifier}"
