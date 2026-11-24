@@ -2,7 +2,6 @@
 
 **Can public data help someone find a business opportunity worth investigating?** Opportunity Radar is my attempt to turn that question into a testable research workflow. The current application collects descriptions of Polish public datasets, lets me search and save them, and can draft a source-linked investigation brief. It is a working prototype, not a validated opportunity detector.
 
-I have a BSc in Physics and am studying for a master's degree in **Quantitative Methods in Economics and Information Systems**, with an interest in quantitative finance. I built this project because I enjoy taking an attractive but vague claim, finding out what evidence it would require, and building the smallest system that can test it.
 
 ## The problem I want to solve
 
