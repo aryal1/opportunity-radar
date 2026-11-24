@@ -1,164 +1,84 @@
 # Opportunity Radar
 
-### Investigate the world. Find the signal. Show the evidence.
+**Can public data help someone find a business opportunity worth investigating?** Opportunity Radar is my attempt to turn that question into a testable research workflow. The current application collects descriptions of Polish public datasets, lets me search and save them, and can draft a source-linked investigation brief. It is a working prototype, not a validated opportunity detector.
 
-Opportunity Radar is an early-stage investigation platform for turning public information into better business questions. It starts with Poland’s open-data catalogue: collect dataset metadata, search across it, retrieve relevant records for a research question, and produce an AI brief that points back to its sources.
+I have a BSc in Physics and am studying for a master's degree in **Quantitative Methods in Economics and Information Systems**, with an interest in quantitative finance. I built this project because I enjoy taking an attractive but vague claim, finding out what evidence it would require, and building the smallest system that can test it.
 
-The long-term ambition is a strategic intelligence workspace for companies: a place to investigate markets, sectors, competitors, regulation, public investment, and emerging risks—with evidence and uncertainty visible at every step.
+## The problem I want to solve
 
-> **Project status:** working MVP. Catalogue sync, local persistence, search, saved records, semantic retrieval, source-linked AI briefs, and a REST API are implemented. The broader company-intelligence vision is the roadmap, not a claim about current capabilities.
+Suppose a small company asks: *Where in Poland might energy-efficiency services be needed?* Public datasets might contain useful clues. Finding the right dataset is already work; understanding its units, geography, time period, and limitations is harder. The [OECD identifies data quality as a barrier to reliable reuse](https://www.oecd.org/en/publications/digital-government-outlook_0496b2bc-en/full-report/strengthening-digital-public-infrastructure-and-data-governance_2c7323c7.html). Even a real change in an economic indicator does not establish that customers have an unmet need or would pay for a solution.
 
-## Why I’m building it
+My hypothesis is that a repeatable investigation workflow can help an analyst reach **verifiable leads** faster than searching a portal or asking a general AI assistant alone. A lead would need a traceable observation, a plausible mechanism, alternative explanations, and a cheap next test. If a controlled comparison cannot show better evidence quality or save meaningful research time, the hypothesis fails. I have not run that comparison yet.
 
-I’m interested in the gap between *having information* and *knowing what to investigate next*. Public data is abundant, fragmented, and often difficult to connect to a real commercial question. I want to build tools that help an analyst move from a question to relevant evidence, identify what is still unknown, and decide what to validate next.
+## What I tried, and what changed
 
-That means treating AI as an assistant to an investigation—not as an authority. Opportunity Radar is designed to make sources inspectable, separate evidence from hypotheses, and make uncertainty part of the output. The first version is deliberately narrow so the ingestion, retrieval, persistence, and API foundations can be tested before adding more sources and more ambitious analysis.
+| Step | Observation | Decision |
+| --- | --- | --- |
+| Retrieve public material from PARP pages | An early request received an Incapsula anti-bot incident page rather than usable content. The remaining `collector.py` detects that response. | Stop treating arbitrary website scraping as a dependable foundation. PARP data is not integrated today. |
+| Ask an early model to assess a weak opportunity claim | In one exploratory trial, it refused to endorse an unsupported hypothesis. | Keep explicit permission to say “insufficient evidence.” One prompt is encouraging behavior, not a measured hallucination rate; the trial output is not preserved as a benchmark. |
+| Use the [official Polish open-data API](https://api.dane.gov.pl/1.4/doc?urls.primaryName=DANE.GOV.PL+RDF+API) | Structured dataset records could be fetched and stored reliably, so I could build a real ingestion and review loop. | Start with an official API and retain source links. |
+| Inspect what “recent” means | On 24 November 2026, one of the newest returned records was [a developer's apartment asking-price dataset](https://api.dane.gov.pl/1.4/datasets/20737). Its modified timestamp says when that catalogue entry changed; it does not show a housing trend or unmet demand. | Treat freshness and semantic similarity as ways to find material to inspect, never as opportunity scores. |
 
-## What works today
+This is the critical boundary of the project's current scope. The [catalogue API](https://api.dane.gov.pl/1.4/doc?urls.primaryName=DANE.GOV.PL+RDF+API) separates **datasets** from their **resources**; some resources expose actual rows. This prototype currently reads dataset *metadata* (title, description, category, keywords, dates and URL), not those underlying observations. It can tell an analyst where to look. It cannot yet demonstrate that a market is changing.
 
-- **Catalogue ingestion:** fetches up to 400 recently modified dataset records from Poland’s open-data API, validates required fields, and updates existing records.
-- **Research dashboard:** search locally stored records, browse metadata, save signals, and open the original catalogue page.
-- **Semantic investigation:** embed stored metadata, rank records by cosine similarity to a question, and generate a brief with numbered source links.
-- **Focused analysis:** request and persist an AI review of an individual dataset.
-- **REST API:** validated FastAPI endpoints with a generated OpenAPI schema and interactive docs at `/docs`.
-- **Persistence:** SQLAlchemy models support SQLite for local development and PostgreSQL through Docker Compose.
-- **Quality checks:** automated tests and Ruff run in GitHub Actions.
+## What the prototype actually does
 
-## How an investigation works
+1. **Collect:** `POST /api/sync` requests up to four pages of recently modified records from `api.dane.gov.pl` (at most 400 per refresh), validates basic fields, and upserts them into a local database.
+2. **Review:** The dashboard supports local text search, a saved shortlist, dataset descriptions, and links supplied by the catalogue. Each listing is capped at 300 matching records; an investigation considers at most 300 stored records.
+3. **Investigate, optionally:** With an OpenAI API key, the app embeds stored metadata, ranks it against a question using cosine similarity, and sends the top records to a model with instructions to separate facts, hypotheses, and gaps. It returns a brief and numbered source links. A separate action generates and saves a review of one dataset.
 
-```mermaid
-flowchart LR
-    Q[Research question] --> E[Create query embedding]
-    D[Synced public metadata] --> I[Create and cache embeddings]
-    I --> R[Rank records by cosine similarity]
-    E --> R
-    R --> C[Grounded AI brief with source links]
-    C --> A[Analyst verifies evidence and next steps]
-    D --> DB[(SQLite or PostgreSQL)]
-    I --> DB
+```text
+Polish open-data API → normalize metadata → SQLite / PostgreSQL
+                                         ↓
+Dashboard + FastAPI → local search / saved records
+                   → embeddings → similarity ranking → AI brief + source URLs
 ```
 
-1. Sync catalogue records into the local database.
-2. Ask a research question in the dashboard or through the API.
-3. Retrieve the most semantically similar stored records.
-4. Generate a cautious brief using those records as context.
-5. Follow the citations, check the original source, and investigate the gaps.
+The stack is **Python 3.12+, FastAPI, SQLAlchemy, SQLite locally, optional PostgreSQL via Docker Compose, plain HTML/CSS/JavaScript, and optional OpenAI embeddings and Responses API**. The API schema and interactive documentation are at `/openapi.json` and `/docs`. Automated tests use mocked provider calls and isolated databases.
 
-The current retriever works over **dataset metadata**, not the underlying files. Similarity is a relevance signal for retrieval; it is not a probability that an opportunity is real.
+There is a deliberate boundary around the AI output: source links show which records were supplied, but the software does not verify every sentence in the generated brief. A citation to a dataset description is not a citation to a measured result. Review the original source before using any claim.
 
-## Technology
+## Does this deserve to become a product?
 
-| Area | Implementation |
-| --- | --- |
-| API and validation | Python 3.12+, FastAPI, Pydantic, OpenAPI |
-| Persistence | SQLAlchemy 2, SQLite locally, PostgreSQL in Compose |
-| Public source | Poland’s `api.dane.gov.pl` catalogue |
-| Retrieval and analysis | OpenAI embeddings, cosine-similarity retrieval, source-grounded Responses API briefs |
-| Interface | HTML, CSS, and JavaScript |
-| Runtime and delivery | Uvicorn, Docker, Docker Compose, GitHub Actions |
-| Testing and style | pytest, Ruff |
+That remains open. The [public-data portal](https://dane.gov.pl/en) already offers discovery; [ChatGPT Deep Research](https://help.openai.com/en/articles/10500283-search-in-chatgpt) can produce cited research; and [AlphaSense](https://www.alpha-sense.com/) offers a mature market-intelligence workflow with substantial content. A nicer interface or an AI-generated idea list would be a weak reason to build another tool.
 
-FastAPI already provides the API server and OpenAPI documentation, so Flask would duplicate the same role. TensorFlow is not part of scoring yet: there is no labeled set of investigation outcomes to train or evaluate a useful model. The current retrieval baseline stays simple and explainable until real feedback can support a measured model.
+The potential wedge is a **narrow investigation engine for a specific decision**: preserve the exact observations behind a claim, show missing and conflicting evidence, compare places or periods, and record what happened after a human tested the lead. The present app is the ingestion and retrieval foundation for that experiment; it does not provide that full workflow. [Statistics Poland's Local Data Bank API](https://api.stat.gov.pl/Home/BdlApi?lang=en) is one plausible source of regional economic observations for a next iteration, but it is not integrated.
 
-## Run locally
+There is no evidence yet of customer demand, willingness to pay, superior results against ChatGPT, or reliable opportunity prediction. I would first interview people who actually make location, sector, or investment decisions: what question took them days to answer, which sources did they use, what decision depended on it, and who controls the research budget? A product is justified only if the answer reveals a recurring, costly task that this workflow measurably improves.
 
-Requires Python 3.12+ and [`uv`](https://docs.astral.sh/uv/).
+## Next experiments and decision criteria
+
+1. **Choose one use case and interview users.** Recruit 5–10 relevant analysts or founders, observe a recent real investigation, and test whether they would commit time or budget to a narrower workflow. Record refusals and existing alternatives as carefully as positive feedback.
+2. **Create a reviewed question set.** Include questions with useful public observations, questions with misleading catalogue matches, and questions where the correct answer is “insufficient evidence.” Save source versions, expected relevant records, and reviewer notes before changing retrieval.
+3. **Compare the alternatives on the same tasks.** Have reviewers, blind to the method, assess portal search, ChatGPT Deep Research, the current app, and a later resource-level version. Measure time to a *verified* lead, relevant-source recall, factual claims supported by the cited source, and unsupported opportunity claims on negative cases. Include provider cost and analyst review time.
+4. **Set a decision gate before seeing results.** A candidate gate is at least 20% less median analyst time than the strongest baseline, at least 95% of factual claims supported by their cited material, and no increase in unsupported opportunity claims. These are proposed thresholds, not achieved results. If reviewers cannot agree on the scoring rubric, fix the rubric before claiming progress.
+5. **Only then deepen the system.** Fetch selected resources and regional time series, preserve units, dates, geography and provenance, invalidate embeddings when metadata changes, and test whether the added complexity improves the benchmark. If it does not, keep the simpler workflow or stop.
+
+## Limits you should know before trying it
+
+- Sync fetches a recent slice of **one** catalogue, not all Polish economic data. A modified record may reflect a metadata edit rather than new observations.
+- Retrieval reads descriptions, and the local listing is capped at 300 records. It has no labeled relevance benchmark. Cached embeddings are not automatically refreshed when a dataset's metadata changes.
+- The model's instructions encourage caution; they do not enforce source support. AI requests send the research question and public metadata to the configured provider and may incur charges.
+- Saved records and dataset analyses persist locally. There are no accounts, team controls, automatic refresh jobs, resource-level measurements, or evidence of commercial adoption.
+
+## Run it yourself
+
+Install [uv](https://docs.astral.sh/uv/) and Python 3.12 or newer, then from the repository root:
 
 ```bash
 uv sync --all-groups
 uv run python main.py
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765). API docs are at `/docs`; the machine-readable schema is at `/openapi.json`. Data is stored in `data/opportunity-radar.sqlite3` by default.
+Open `http://127.0.0.1:8765`, click **Refresh signals**, then search or save records. No API key is required for these actions. The default database is `data/opportunity-radar.sqlite3`. The server also exposes `/docs`.
 
-### Enable AI features
+For the optional **Analyze** and **Investigate** actions, copy `.env.example` to `.env` and set `OPENAI_API_KEY`. The defaults are `gpt-4.1-mini` and `text-embedding-3-small`; both can be changed in `.env`. If you prefer PostgreSQL, `docker compose up --build` starts the app and database with a persistent volume. Set `POSTGRES_PASSWORD` before using that setup outside local development.
 
-Copy `.env.example` to `.env` and set `OPENAI_API_KEY`. The default models are `gpt-4.1-mini` and `text-embedding-3-small`; configure alternatives with `OPENAI_MODEL` and `OPENAI_EMBEDDING_MODEL`.
-
-Semantic investigation sends the question and relevant public dataset metadata to the configured model provider. Embedding and generation calls may incur provider charges. No API key is needed to browse, search, sync, or save catalogue records.
-
-### Run with PostgreSQL
-
-With Docker and Docker Compose installed:
-
-```bash
-docker compose up --build
-```
-
-Compose starts the application with PostgreSQL 16 and a persistent database volume. Set `POSTGRES_PASSWORD` through the environment before using this configuration outside a local development environment.
-
-## API examples
-
-```http
-GET /api/datasets?q=energy&saved=false
-GET /api/stats
-POST /api/sync
-Content-Type: application/json
-
-{"query":"energy"}
-```
-
-```http
-POST /api/investigate
-Content-Type: application/json
-
-{"query":"What public-data signals could help investigate energy efficiency?","top_k":5}
-```
-
-Other endpoints: `POST /api/analyze` and `POST /api/save`. Explore request schemas and try calls interactively at `/docs`.
-
-## Design choices and current limits
-
-- **Evidence before confidence:** briefs are instructed to cite retrieved records, distinguish hypotheses, and describe evidence gaps. Citation formatting is not a guarantee that every generated claim is correct; check the linked sources.
-- **Narrow source coverage:** only Poland’s open-data catalogue is currently integrated. The app does not yet ingest full files, company records, news, tenders, or regulatory documents.
-- **Metadata-only retrieval:** sparse or vague descriptions can lead to weak retrieval. Underlying tables and documents are not parsed or indexed yet.
-- **No validated opportunity score:** there is no labeled benchmark, precision/recall study, or measured prediction accuracy. Similarity scores only order retrieved records.
-- **Single-user MVP:** saved signals and analyses are local records. Accounts, team workspaces, access controls, audit history, and production operations are not implemented.
-- **AI cost and data flow:** AI features require external provider calls. Review provider terms and organizational data policies before using the platform with sensitive research.
-
-## Roadmap
-
-### 1. Make investigations deeper
-
-- Download and parse supported source files, retaining dataset and resource provenance.
-- Add robust text/table extraction, chunking, and retrieval across the source material itself.
-- Improve citation precision so claims link to the exact dataset resource or passage.
-- Track changes over time and surface newly published or materially updated information.
-
-### 2. Build a company strategy workspace
-
-- Let a company define its sectors, markets, strategic priorities, and watchlists.
-- Combine open datasets with carefully selected sources such as public tenders, legislation, company registers, and economic statistics.
-- Connect entities, places, sectors, policy changes, and events into an explorable evidence graph.
-- Generate investigation plans: what is known, what is uncertain, which sources could resolve it, and what to validate with customers or domain experts.
-- Support shared case files, notes, source review, and exportable evidence-backed reports.
-
-### 3. Evaluate before adding predictive ML
-
-- Capture analyst feedback on relevance, evidence quality, and whether a lead was useful.
-- Create a reviewed, versioned evaluation set and measure retrieval quality before tuning ranking.
-- Test ranking approaches—including a TensorFlow model—against a transparent baseline and report results with confidence limits.
-- Monitor stale sources, citation coverage, and unsupported claims as product-quality metrics.
-
-### 4. Prepare for organizational use
-
-- Add authentication, role-based access, audit logs, and per-workspace data boundaries.
-- Establish retention, encryption, backup, and deployment policies suitable for company research.
-- Add observability, background ingestion jobs, rate limits, and operational health checks.
-
-## Development
+Run the checks with:
 
 ```bash
 uv run python -m pytest -q
 uv run python -m ruff check src tests main.py
 ```
 
-The test suite uses isolated SQLite databases and mocked providers; it does not require API credentials or make external API calls.
-
-## Current snapshot
-
-- Up to **400 records** per catalogue refresh.
-- **11 automated tests** passing in the current MVP.
-- **One integrated public-data source**; AI investigation is optional.
-
-These are implementation and test counts—not a claim about commercial impact or opportunity-prediction accuracy.
+The current tests cover normalization, local storage, API validation, and retrieval with mocked AI responses. They do not test live model quality or customer value.
